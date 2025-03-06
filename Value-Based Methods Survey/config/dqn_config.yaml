@@ -28,4 +28,4 @@ logging:
 run_management:
   max_session_duration: 28800  # 8 hours in seconds
   save_frequency_seconds: 1200  # Save every 30 minutes
-  resume_from: none  # Set to run ID to resume (e.g. "dqn_20240220-123456")
+  resume_from: almost_rainbow  # Set to run ID to resume (e.g. "dqn_20240220-123456")

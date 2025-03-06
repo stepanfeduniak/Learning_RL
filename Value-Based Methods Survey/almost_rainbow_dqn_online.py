@@ -41,7 +41,43 @@ gym.register_envs(ale_py)
 # Gerät (GPU falls verfügbar)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
-
+class NoisyLinear(nn.Module):
+    def __init__(self, in_features, out_features, sigma_init=0.5):
+        super(NoisyLinear, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        
+        self.weight_mu = nn.Parameter(torch.FloatTensor(out_features, in_features))
+        self.weight_sigma = nn.Parameter(torch.FloatTensor(out_features, in_features))
+        self.register_buffer("weight_epsilon", torch.FloatTensor(out_features, in_features))
+        
+        self.bias_mu = nn.Parameter(torch.FloatTensor(out_features))
+        self.bias_sigma = nn.Parameter(torch.FloatTensor(out_features))
+        self.register_buffer("bias_epsilon", torch.FloatTensor(out_features))
+        
+        self.sigma_init = sigma_init
+        self.reset_parameters()
+        self.reset_noise()
+    
+    def reset_parameters(self):
+        bound = 1 / np.sqrt(self.in_features)
+        self.weight_mu.data.uniform_(-bound, bound)
+        self.weight_sigma.data.fill_(self.sigma_init / np.sqrt(self.in_features))
+        self.bias_mu.data.uniform_(-bound, bound)
+        self.bias_sigma.data.fill_(self.sigma_init / np.sqrt(self.in_features))
+    
+    def reset_noise(self):
+        self.weight_epsilon.normal_()
+        self.bias_epsilon.normal_()
+    
+    def forward(self, x):
+        if self.training:
+            weight = self.weight_mu + self.weight_sigma * self.weight_epsilon
+            bias = self.bias_mu + self.bias_sigma * self.bias_epsilon
+        else:
+            weight = self.weight_mu
+            bias = self.bias_mu
+        return torch.nn.functional.linear(x, weight, bias)
 # ----------------------
 # JSON-basierte Logging-Funktionen
 # ----------------------
@@ -143,9 +179,9 @@ class PrioritizedReplayBuffer:
 # ----------------------
 # DQN-Netzwerkdefinition
 # ----------------------
-class DQN(nn.Module):
+class DuelingNoisyDQN(nn.Module):
     def __init__(self, input_dim, output_dim, filename="model_weights.pth"):
-        super(DQN, self).__init__()
+        super(DuelingNoisyDQN, self).__init__()
         self.input_dim = input_dim
         channels, _, _ = input_dim
 
@@ -164,11 +200,12 @@ class DQN(nn.Module):
         lin1_output_size = 512
 
         # Fully Connected Layers
-        self.l2 = nn.Sequential(
-            nn.Linear(conv_output_size, lin1_output_size),
-            nn.ReLU(),
-            nn.Linear(lin1_output_size, output_dim)
-        )
+        self.value_net_1 = NoisyLinear(conv_output_size, lin1_output_size)
+        self.value_net_2 = NoisyLinear(lin1_output_size, 1)
+            
+        self.advantage_net_1 = NoisyLinear(conv_output_size, lin1_output_size)
+        self.advantage_net_2 = NoisyLinear(lin1_output_size, output_dim)
+  
 
         # Dateiname zum Speichern des Modells
         self.filename = filename
@@ -181,8 +218,12 @@ class DQN(nn.Module):
     def forward(self, x):
         x = self.l1(x)
         x = x.view(x.shape[0], -1)
-        actions = self.l2(x)
-        return actions
+        values = self.value_net_1(x)
+        values = self.value_net_2(values)
+        advantages = self.advantage_net_1(x)
+        advantages = self.advantage_net_2(advantages)
+        q_values = values + (advantages - advantages.mean(dim=1, keepdim=True))
+        return q_values
 
 # ----------------------
 # Hilfsfunktionen
@@ -237,7 +278,7 @@ def augment_data(state, reduced_action, reward, next_state_tensor, done):
 # ----------------------
 # Trainings- und Evaluationsfunktionen
 # ----------------------
-def record_breakout_game(policy_net, max_steps=10000, output_file="breakout.gif"):
+def record_breakout_game(policy_net, max_steps=4000, output_file="breakout.gif"):
     """Zeichnet ein Spiel auf und speichert es als GIF."""
     env = gym.make("Breakout-v4", render_mode="rgb_array")
     env = AtariPreprocessingWrapper(env)
@@ -252,7 +293,7 @@ def record_breakout_game(policy_net, max_steps=10000, output_file="breakout.gif"
     q_values_per_game = []
     
     observation = preprocess_observation(observation)
-
+    policy_net.eval()
     while not done and steps < max_steps:
         with torch.no_grad():
             q_values = policy_net(observation.unsqueeze(0).to(device))
@@ -273,7 +314,7 @@ def record_breakout_game(policy_net, max_steps=10000, output_file="breakout.gif"
         observation = preprocess_observation(observation_np)
         frames.append(env.render())
         steps += 1
-
+    policy_net.train()
     env.close()
     imageio.mimsave(output_file, frames, fps=10)
     print(f"Saved game recording to {output_file}")
@@ -339,7 +380,7 @@ def train_DQN(policy_net, target_net):
 
     session_start_time = time.time()
     last_save_time = session_start_time
-    eps=1.0
+    #eps=1.0
     for episode in range(start_episode, config['training']['num_episodes']):
         # Check session duration
         current_time = time.time()
@@ -392,14 +433,10 @@ def train_DQN(policy_net, target_net):
         state = preprocess_observation(state)
 
         while not done and steps < config['training']['max_steps']:
-            # ε-greedy Aktionselektion
-            if random.uniform(0, 1) <= eps:
-                reduced_action = random.choice([0, 1, 2])
-            else:
-                with torch.no_grad():
-                    q_values = policy_net(state.unsqueeze(0).to(device))
-                    reduced_action = torch.argmax(q_values, dim=1).item()
-                    max_q_value = max(max_q_value, q_values[0, reduced_action].item())
+            with torch.no_grad():
+                q_values = policy_net(state.unsqueeze(0).to(device))
+                reduced_action = torch.argmax(q_values, dim=1).item()
+                max_q_value = max(max_q_value, q_values[0, reduced_action].item())
             action = action_map[reduced_action]
 
             next_state, reward, terminated, truncated, info = env.step(action)
@@ -427,7 +464,7 @@ def train_DQN(policy_net, target_net):
             beta_frames = warmup_steps  # Anzahl der Schritte, über die beta linear ansteigt
             beta = min(1.0, beta_start + update_steps * (1.0 - beta_start) / beta_frames)
 
-            if steps % 2 == 0 and len(replay_buffer) >= max(config['training']['batch_size'], 20000):
+            if steps % 2 == 0 and len(replay_buffer) >= max(config['training']['batch_size'], 5000):
                 batch, indices, weights = replay_buffer.sample(config['training']['batch_size'], beta)
                 states, actions, rewards, next_states, dones = zip(*batch)
                 states = torch.stack(states).to(device)
@@ -460,7 +497,7 @@ def train_DQN(policy_net, target_net):
 
                 # (Der Rest deines Update- und Zielnetzwerk-Codes bleibt unverändert.)
 
-                TARGET_UPDATE_FREQUENCY = 10000 if episode > 100 else 500
+                TARGET_UPDATE_FREQUENCY = 10000 if episode > 300 else 500
                 breaker += 1
                 update_steps += 1
                 if update_steps % TARGET_UPDATE_FREQUENCY == 0:
@@ -470,10 +507,10 @@ def train_DQN(policy_net, target_net):
         # Epsilon-Decay: lineare Abnahme von 1.0 auf 0.1 über die Episoden
         # Time-based decay using total environment steps rather than episodes
         total_steps = update_steps  # Since you update every 4 steps
-        eps_start = 1.0
+        """eps_start = 1.0
         eps_end = 0.1
         eps_decay_steps = warmup_steps  # 1M steps for full decay
-        eps = eps_end + (eps_start - eps_end) * max(0, (eps_decay_steps - total_steps) / eps_decay_steps)
+        eps = eps_end + (eps_start - eps_end) * max(0, (eps_decay_steps - total_steps) / eps_decay_steps)"""
         reward_history.append(episode_reward)
         avg_loss = sum(episode_losses) / len(episode_losses) if episode_losses else 0
         loss_history.append(avg_loss)
@@ -484,7 +521,7 @@ def train_DQN(policy_net, target_net):
         writer.add_scalar("Episode/Reward", episode_reward, episode)
         writer.add_scalar("Episode/AverageLoss", avg_loss, episode)
         writer.add_scalar("Episode/MaxQ", max_q_value, episode)
-        writer.add_scalar("Episode/Epsilon", eps, episode)
+        #writer.add_scalar("Episode/Epsilon", eps, episode)
         writer.add_scalar("Episode/Steps", steps, episode)
         writer.add_scalar("Episode/BufferSize", len(replay_buffer), episode)
         writer.add_scalar("Episode/UpdateSteps", update_steps, episode)
@@ -521,8 +558,8 @@ if __name__ == "__main__":
     num_actions = config['model']['num_actions']
     input_shape = tuple(config['model']['input_shape'])
     
-    policy_net = DQN(input_shape, num_actions).to(device)
-    target_net = DQN(input_shape, num_actions).to(device)
+    policy_net = DuelingNoisyDQN(input_shape, num_actions).to(device)
+    target_net = DuelingNoisyDQN(input_shape, num_actions).to(device)
     
     # Load checkpoint if resuming
     if config['run_management']['resume_from']:
