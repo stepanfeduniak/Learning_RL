@@ -8,7 +8,7 @@ import numpy as np
 # ----------------------
 
 class AtariPreprocessingWrapper(gym.Wrapper):
-    def __init__(self, env, frame_skip=2, stack_size=4):
+    def __init__(self, env, frame_skip=3, stack_size=4):
         super().__init__(env)
         self.frame_skip = frame_skip
         self.frame_buffer = deque(maxlen=2)  # For max-pooling over frames

@@ -14,6 +14,8 @@ import os
 import json  # For saving logs as JSON
 from collections import deque
 import numpy as np
+
+
 LOGS_PATH = "logs/training_stats.json"
 def display_stats(reward_history, loss_history, max_q_value_history,q_values_per_game):
     plt.figure(figsize=(15, 4))
