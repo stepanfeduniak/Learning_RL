@@ -1,0 +1,163 @@
+\documentclass[12pt,a4paper]{article}
+
+% Encoding and language
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+
+% Page layout and margins
+\usepackage{geometry}
+\geometry{
+    a4paper,
+    left=2.5cm,
+    right=2.5cm,
+    top=2.5cm,
+    bottom=2.5cm,
+}
+\usepackage{graphicx}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usepackage{array}
+\usepackage{booktabs}
+% Graphics, hyperlinks, and additional packages
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{setspace}
+\onehalfspacing
+
+% Header and footer settings
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\textit{Diffusion Policies}}
+\rhead{\textit{Notes
+}}
+\cfoot{\thepage}
+
+\begin{document}
+
+% --- Title Page (Deckblatt) ---
+\begin{titlepage}
+    \centering
+    \vspace*{2cm}
+    {\Large\bfseries Diffusion Policies\par}
+    \vspace{2cm}
+\end{titlepage}
+
+% --- Table of Contents (optional) ---
+\tableofcontents
+\newpage
+\section{Denoising Diffusion Probabilistic Models}
+%─────────────────────────────────────────────────────────────────────────────%
+% Diffusion model definition
+%─────────────────────────────────────────────────────────────────────────────%
+\begin{center}
+    \large\textbf{From the paper:}
+\end{center}
+Diffusion models are latent‐variable models of the form
+\[
+  p_\theta(x_0)
+  := \int p_\theta(x_{0:T}) \,\mathrm{d}x_{1:T},
+\]
+where \(x_1,\dots,x_T\) are latents of the same dimensionality as the data
+\(x_0\sim q(x_0)\).  The joint distribution \(p_\theta(x_{0:T})\) is called
+the \emph{reverse process}, and it is defined as a Markov chain with learned
+Gaussian transitions starting at
+\[
+  p(x_T) \;=\; \mathcal{N}\bigl(x_T;0,\mathbf I\bigr).
+\]
+\begin{align}
+  p_\theta(x_{0:T})
+  &:= p(x_T)\,\prod_{t=1}^T p_\theta(x_{t-1}\mid x_t),
+  \quad
+  p_\theta(x_{t-1}\mid x_t)
+  := \mathcal{N}\!\bigl(x_{t-1};\,\mu_\theta(x_t,t),\,\Sigma_\theta(x_t,t)\bigr).
+  \tag{1}\label{eq:reverse}
+\end{align}
+
+What distinguishes diffusion models from other latent‐variable methods is
+that the approximate posterior \(q(x_{1:T}\mid x_0)\), called the
+\emph{forward process} or \emph{diffusion process}, is fixed to a Markov chain
+that gradually adds Gaussian noise to the data according to a variance schedule
+\(\beta_1,\dots,\beta_T\):
+\begin{align}
+  q(x_{1:T}\mid x_0)
+  &:= \prod_{t=1}^T q(x_t\mid x_{t-1}),
+  \quad
+  q(x_t\mid x_{t-1})
+  := \mathcal{N}\!\bigl(x_t;\,\sqrt{1-\beta_t}\,x_{t-1},\,\beta_t\mathbf I\bigr).
+  \tag{2}\label{eq:forward}
+\end{align}
+\begin{center}
+    \large\textbf{My notes for understanding:}
+\end{center}
+The needed formulas are:
+\begin{align}
+    p(x_{t-1}\mid x_t)
+    &= \mathcal{N}\bigl(x_{t-1};\,\mu_\theta(x_t,t),\,\Sigma_\theta(x_t,t)\bigr),\\
+    q(x_{t-1}\mid x_t, x_0)
+    &= \mathcal{N}\bigl(x_{t-1};\,\tilde{\mu}(x_t,x_0),\,\tilde{\beta}_t\,\mathbf{I}\bigr),\\
+    \tilde{\mu}_t
+    &= \frac{1}{\sqrt{\alpha_t}}
+       \Bigl(
+         x_t \;-\;\frac{1 - \alpha_t}{\sqrt{1 - {\alpha}_t}}\;\epsilon_t
+       \Bigr)
+       % \quad \epsilon_t \text{ is the noise added at time } t,\text{ which the network estimates}
+    \end{align}
+In my understanding, we have the following:
+\\
+We first add noise in the forward process:
+\begin{equation*}
+    x_t = \sqrt{\alpha_t} x_{t-1} + \sqrt{1 - \alpha_t} \epsilon_t
+\end{equation*}
+Then we express the reverse process as:
+\begin{equation*}
+    x_{t-1} = \frac{1}{\sqrt{\alpha_t}} \left( x_t - \sqrt{1 - \alpha_t} \epsilon_t \right)
+\end{equation*}
+And here we just need to predict the noise \(\epsilon_t\) added at time \(t\) to get the original image back.
+\\
+\begin{center}
+    \large\textbf{From paper:}
+\end{center}
+A notable property of the forward process is that it admits sampling \(x_t\) at an arbitrary timestep \(t\) in closed form: using the notation
+\[
+  \alpha_t := 1 - \beta_t,
+  \quad
+  \bar\alpha_t := \prod_{s=1}^t \alpha_s,
+\]
+we have
+\begin{equation}\label{eq:q_xt_given_x0}
+  q(x_t \mid x_0)
+  = \mathcal{N}\!\bigl(x_t;\,\sqrt{\bar\alpha_t}\,x_0,\,(1 - \bar\alpha_t)\,\mathbf{I}\bigr).
+\tag{4}
+\end{equation}
+It is not so difficult to arrive at this trough simple calculations.
+\subsection{Objective}
+\begin{center}
+    \large\textbf{From paper:}
+\end{center}
+We try to minimize the negative log-likelihood:
+\begin{align*}
+    \mathbb{E}_{q} [-\log p_{\theta}(\mathbf{x}_0)] \leq \mathbb{E}_{q} \left[ -\log \frac{p_{\theta}(\mathbf{x}_{0:T})}{q(\mathbf{x}_{1:T}|\mathbf{x}_0)} \right] = \mathbb{E}_{q} \left[ -\log p(\mathbf{x}_T) - \sum_{t \geq 1} \log \frac{p_{\theta}(\mathbf{x}_{t-1}|\mathbf{x}_t)}{q(\mathbf{x}_t|\mathbf{x}_{t-1})} \right] =: L \quad 
+\end{align*}
+Here the inequality follows from Jensen's inequality.
+We then rewrite the objective as:
+\begin{align}
+    \mathbb{E}_q \left[ D_{KL}(q(\mathbf{x}_T|\mathbf{x}_0) \| p(\mathbf{x}_T)) + \sum_{t > 1} D_{KL}(q(\mathbf{x}_{t-1}|\mathbf{x}_t, \mathbf{x}_0) \| p_{\theta}(\mathbf{x}_{t-1}|\mathbf{x}_t)) - \log p_{\theta}(\mathbf{x}_0|\mathbf{x}_1) \right]
+\end{align}
+Which I have yet to understand.
+We still need to compute some things for the KL divergence:
+\begin{equation*}
+    q(\mathbf{x}_{t-1}|\mathbf{x}_t, \mathbf{x}_0) = \mathcal{N}(\mathbf{x}_{t-1}; \tilde{\boldsymbol{\mu}}_t(\mathbf{x}_t, \mathbf{x}_0), \tilde{\beta}_t \mathbf{I}), \quad (6)
+\end{equation*}
+where:
+\begin{equation*}
+    \tilde{\boldsymbol{\mu}}_t(\mathbf{x}_t, \mathbf{x}_0) := \frac{\sqrt{\bar{\alpha}_{t-1}}\beta_t}{1 - \bar{\alpha}_t} \mathbf{x}_0 + \frac{\sqrt{\alpha_t}(1 - \bar{\alpha}_{t-1})}{1 - \bar{\alpha}_t} \mathbf{x}_t \quad \text{and} \quad \tilde{\beta}_t := \frac{1 - \bar{\alpha}_{t-1}}{1 - \bar{\alpha}_t} \beta_t \quad (7)
+\end{equation*}
+I still need to revisit this part for the derivation.
+
+\end{document}
